@@ -1,4 +1,7 @@
-import { MAX_DESCRIPTION_LENGTH, SPLITS, netBalances, parseAmount, simplifyDebts, splitShares } from '../shared/ledger.js';
+import {
+  FULL_PERCENT, MAX_DESCRIPTION_LENGTH, SPLITS, formatPercent, netBalances, pairwiseDebts, parseAmount, parseCents,
+  parsePercent, simplifyDebts, splitShares,
+} from '../shared/ledger.js';
 import { recordActivity } from './activity.js';
 import { conflict, invalid, notFound } from './errors.js';
 
@@ -12,6 +15,8 @@ const EXPENSE_COLUMNS = `
 // Checks an add/edit request against the group's members and works out the shares.
 //   { description, amount, paidBy, split: 'equal', participants?: [ids], spentOn }
 //   { description, amount, paidBy, split: 'full', owedBy: id, spentOn }
+//   { description, amount, paidBy, split: 'percent', percents: { [id]: "33.33" }, spentOn }
+//   { description, amount, paidBy, split: 'exact', amounts: { [id]: "12.50" }, spentOn }
 // participants defaults to everyone in the group.
 export function validateExpense(body, memberIds) {
   const description = typeof body?.description === 'string' ? body.description.trim() : '';
@@ -28,7 +33,11 @@ export function validateExpense(body, memberIds) {
   if (!SPLITS.includes(split)) throw invalid('split', 'Choose how to split it.');
 
   let shares;
-  if (split === 'equal') {
+  let splitValues = null;
+  if (split === 'percent' || split === 'exact') {
+    splitValues = parseSplitValues(body, split, memberIds, amountCents);
+    shares = splitShares(amountCents, { split, paidBy, values: splitValues });
+  } else if (split === 'equal') {
     const participants = body.participants ?? memberIds;
     if (!Array.isArray(participants) || participants.length === 0 || !participants.every((id) => memberIds.includes(id))) {
       throw invalid('participants', 'Choose who to split it between.');
@@ -44,8 +53,37 @@ export function validateExpense(body, memberIds) {
   const spentOn = body.spentOn ?? localDate();
   if (!isValidDate(spentOn)) throw invalid('spentOn', 'Enter a valid date.');
 
-  return { description, amountCents, paidBy, split, shares, spentOn };
+  return { description, amountCents, paidBy, split, shares, splitValues, spentOn };
 }
+
+// Reads each person's percentage or exact amount and checks they add up.
+function parseSplitValues(body, split, memberIds, amountCents) {
+  const field = split === 'percent' ? 'percents' : 'amounts';
+  const raw = body[field];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw invalid(field, split === 'percent' ? 'Enter a percentage for each person.' : 'Enter an amount for each person.');
+  }
+
+  const values = {};
+  for (const [key, input] of Object.entries(raw)) {
+    const id = Number(key);
+    if (!memberIds.includes(id)) throw invalid(field, 'Only people in the group can share an expense.');
+    const value = split === 'percent' ? parsePercent(input) : parseCents(input);
+    if (value === null) throw invalid(field, split === 'percent' ? 'Enter percentages like 25 or 33.33.' : 'Enter amounts like 12.50.');
+    if (value > 0) values[id] = value;
+  }
+
+  const total = Object.values(values).reduce((a, b) => a + b, 0);
+  if (split === 'percent' && total !== FULL_PERCENT) {
+    throw invalid(field, `The percentages add up to ${formatPercent(total)}, not 100%.`);
+  }
+  if (split === 'exact' && total !== amountCents) {
+    throw invalid(field, `The amounts add up to ${dollars(total)}, not ${dollars(amountCents)}.`);
+  }
+  return values;
+}
+
+const dollars = (cents) => `$${(cents / 100).toFixed(2)}`;
 
 // The group's current ledger. balanceToken identifies exactly what the user is
 // looking at, so a settle-up can be refused if anything changed in the meantime.
@@ -54,7 +92,15 @@ export function getGroupLedger(db, groupId) {
   const balances = netBalances(expenses);
   const token = Object.entries(balances).filter(([, c]) => c !== 0).sort(([a], [b]) => a - b)
     .map(([id, c]) => `${id}:${c}`).join(',');
-  return { expenses, balances, transfers: simplifyDebts(balances), balanceToken: `${expenses.length}|${token}` };
+  return {
+    expenses,
+    balances,
+    transfers: simplifyDebts(balances),
+    // How many payments it would take if everyone paid back each payer directly,
+    // so the settle-up screen can show what simplifying saves.
+    directPaymentCount: pairwiseDebts(expenses).length,
+    balanceToken: `${expenses.length}|${token}`,
+  };
 }
 
 export function groupBalanceFor(db, groupId, userId) {
@@ -67,16 +113,24 @@ export function balancesWithEveryone(db, userId) {
   const expenses = loadExpenses(db,
     `${ACTIVE} AND group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)`, userId);
   const owed = {};
-  for (const e of expenses) {
-    if (e.paidBy === userId) {
-      for (const [id, cents] of Object.entries(e.shares)) {
-        if (Number(id) !== userId) owed[id] = (owed[id] ?? 0) + cents;
-      }
-    } else if (e.shares[userId]) {
-      owed[e.paidBy] = (owed[e.paidBy] ?? 0) - e.shares[userId];
-    }
+  for (const debt of pairwiseDebts(expenses)) {
+    if (debt.toUserId === userId) owed[debt.fromUserId] = (owed[debt.fromUserId] ?? 0) + debt.amountCents;
+    if (debt.fromUserId === userId) owed[debt.toUserId] = (owed[debt.toUserId] ?? 0) - debt.amountCents;
   }
   return owed;
+}
+
+export function hasUnsettledExpenses(db, groupId) {
+  return !!db.prepare(`SELECT 1 FROM expenses WHERE group_id = ? AND ${ACTIVE} LIMIT 1`).get(groupId);
+}
+
+// Whether someone paid for, or has a share in, anything on the group's current ledger.
+export function isInUnsettledExpenses(db, groupId, userId) {
+  return !!db.prepare(`
+    SELECT 1 FROM expenses e
+    WHERE e.group_id = ? AND e.settlement_id IS NULL AND e.deleted_at IS NULL
+      AND (e.paid_by = ? OR EXISTS (SELECT 1 FROM expense_shares s WHERE s.expense_id = e.id AND s.user_id = ?))
+    LIMIT 1`).get(groupId, userId, userId);
 }
 
 export function createExpense(db, userId, groupId, input) {
@@ -85,7 +139,7 @@ export function createExpense(db, userId, groupId, input) {
       INSERT INTO expenses (group_id, description, amount_cents, paid_by, split_type, spent_on, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(groupId, input.description, input.amountCents, input.paidBy, input.split, input.spentOn, userId).lastInsertRowid);
-    saveShares(db, id, input.shares);
+    saveShares(db, id, input);
     const expense = getExpense(db, id);
     recordActivity(db, { type: 'expense_added', actorId: userId, groupId, data: snapshot(expense) });
     return expense;
@@ -100,7 +154,7 @@ export function updateExpense(db, userId, expense, input) {
       WHERE id = ?`)
       .run(input.description, input.amountCents, input.paidBy, input.split, input.spentOn, expense.id);
     db.prepare('DELETE FROM expense_shares WHERE expense_id = ?').run(expense.id);
-    saveShares(db, expense.id, input.shares);
+    saveShares(db, expense.id, input);
     const updated = getExpense(db, expense.id);
     recordActivity(db, { type: 'expense_updated', actorId: userId, groupId: expense.groupId, data: snapshot(updated) });
     return updated;
@@ -118,7 +172,8 @@ export function deleteExpense(db, userId, expense) {
 // their groups, and still be on the current ledger.
 export function getEditableExpense(db, userId, id) {
   const expense = loadExpenses(db, `id = ? AND deleted_at IS NULL
-    AND group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)`, id, userId)[0];
+    AND group_id IN (SELECT m.group_id FROM group_members m JOIN groups g ON g.id = m.group_id
+                     WHERE m.user_id = ? AND g.deleted_at IS NULL)`, id, userId)[0];
   if (!expense) throw notFound('That expense does not exist.');
   if (expense.settlementId) throw conflict('settled', 'That expense has been settled and can no longer be changed.');
   return expense;
@@ -180,7 +235,8 @@ function paymentsFor(db, settlementId) {
     FROM settlement_payments WHERE settlement_id = ? ORDER BY rowid`).all(settlementId);
 }
 
-// Expenses matching a WHERE clause, newest first, each with a shares map.
+// Expenses matching a WHERE clause, newest first, each with a shares map (and,
+// for percentage and exact splits, splitValues: what each person was given).
 function loadExpenses(db, where, ...params) {
   const expenses = db.prepare(`SELECT ${EXPENSE_COLUMNS} FROM expenses WHERE ${where} ORDER BY spent_on DESC, id DESC`)
     .all(...params);
@@ -188,10 +244,14 @@ function loadExpenses(db, where, ...params) {
 
   const byId = new Map(expenses.map((e) => [e.id, Object.assign(e, { shares: {} })]));
   const shares = db.prepare(`
-    SELECT expense_id AS expenseId, user_id AS userId, share_cents AS cents
+    SELECT expense_id AS expenseId, user_id AS userId, share_cents AS cents, split_value AS value
     FROM expense_shares WHERE expense_id IN (SELECT value FROM json_each(?))`)
     .all(JSON.stringify([...byId.keys()]));
-  for (const s of shares) byId.get(s.expenseId).shares[s.userId] = s.cents;
+  for (const s of shares) {
+    const expense = byId.get(s.expenseId);
+    expense.shares[s.userId] = s.cents;
+    if (s.value !== null) (expense.splitValues ??= {})[s.userId] = s.value;
+  }
   return expenses;
 }
 
@@ -199,9 +259,11 @@ function getExpense(db, id) {
   return loadExpenses(db, 'id = ?', id)[0];
 }
 
-function saveShares(db, expenseId, shares) {
-  const insert = db.prepare('INSERT INTO expense_shares (expense_id, user_id, share_cents) VALUES (?, ?, ?)');
-  for (const [userId, cents] of Object.entries(shares)) insert.run(expenseId, Number(userId), cents);
+function saveShares(db, expenseId, { shares, splitValues }) {
+  const insert = db.prepare('INSERT INTO expense_shares (expense_id, user_id, share_cents, split_value) VALUES (?, ?, ?, ?)');
+  for (const [userId, cents] of Object.entries(shares)) {
+    insert.run(expenseId, Number(userId), cents, splitValues?.[userId] ?? null);
+  }
 }
 
 function snapshot(e) {

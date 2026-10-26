@@ -16,6 +16,7 @@ Run `npm run dev` and open http://localhost:3000 (use `localhost`, not `127.0.0.
 
 ### Upgrade of your existing local data
 - [ ] After restarting `npm run dev`, the Groups tab shows a **"Jack & Jaime"** group (your old ledger was moved into it automatically)
+- [ ] It's still there after the second upgrade (for percentage/exact splits and group deletion), with nothing missing
 - [ ] Jaime appears in your Friends tab
 
 ## On your iPhone over home Wi-Fi
@@ -56,6 +57,15 @@ and open the printed `http://192.168.x.x:3000` address in Safari. Use the **Dev 
 - [ ] With the keyboard open, Save is still reachable (scroll the sheet if needed)
 - [ ] Saving with no description shows the error under Description
 
+### Percentage and exact splits
+- [ ] Two-person group: the Split dropdown also has "Split by percentages…" and "Split by exact amounts…"; choosing one shows a "Paid by" picker and a box per person
+- [ ] Bigger group: the Split dropdown has "Split by percentages" and "Split by exact amounts"; the "Split between" tick boxes hide
+- [ ] The percentage and amount boxes open the number keypad and don't zoom the page
+- [ ] Typing 60 then 40 shows "40% left to assign", then "Adds up to 100%" in green, with each person's dollar amount beside their box
+- [ ] Exact amounts that don't add up show "$X left to assign" or "$X too much"; saving anyway shows "The amounts add up to $X, not $Y." and fixing a box clears that message
+- [ ] A saved percentage expense shows "split by percentage" on its row; tapping it brings back the same percentages
+- [ ] Blank or 0 for someone leaves them out of the expense
+
 ### Editing and deleting
 - [ ] Tapping an expense opens "Edit expense" filled in, and the keyboard does **not** pop up
 - [ ] Changing the amount or split and tapping "Save changes" updates the row and the balances
@@ -65,18 +75,29 @@ and open the printed `http://192.168.x.x:3000` address in Safari. Use the **Dev 
 - [ ] The balance card shows "You are owed / You owe" plus who owes whom
 - [ ] Settle up in a two-person group asks "Record that Jaime paid you $X?"
 - [ ] Settle up in a bigger group lists every payment
+- [ ] When everyone has paid for things, the sheet says e.g. "These 2 payments settle everyone. Paying each other back directly would take 3."
 - [ ] Confirming clears the group's ledger and shows "Settled up…"
 - [ ] History lists the settle-up; tapping it shows the payments and the expenses (read-only)
 
+### Group settings (gear icon on a group page)
+- [ ] The gear sits next to History and opens Group settings; "‹ (group name)" goes back
+- [ ] Renaming saves, shows "Name saved.", and the new name shows on the group page, Groups list and Activity
+- [ ] While there are unsettled expenses: people in them say "In unsettled expenses" with Remove/Leave greyed out, and Delete group is greyed out with "Settle up first…"
+- [ ] After settling up: Remove asks "Remove Sam from “…”?" and takes them off the list
+- [ ] The removed person no longer sees the group, and their Activity says "Jack removed you from …" (not tappable)
+- [ ] Leave asks first, then drops you back on Groups without that group
+- [ ] Delete group asks first, then the group disappears for everyone; Activity shows "… deleted the group “…”" and old items for it aren't tappable
+- [ ] In a group with only you, it says "The only member" and only Delete is available
+
 ### Activity
 - [ ] Shows "Jaime added “Groceries” in Home." with "You owe $X" / "You get back $X" and the date
-- [ ] Shows settle-ups, groups created, people added, and friends added
+- [ ] Shows settle-ups, groups created, renamed and deleted, people added, removed or leaving, and friends added
 - [ ] Tapping a group item opens that group
 - [ ] "Show older activity" appears once there are more than 30 items
 
 ### Account
 - [ ] Shows your name and the email(s) you sign in with
-- [ ] Changing your display name saves, and Jaime sees the new name in her app
+- [ ] Changing your display name saves, and Jaime sees the new name in their app
 - [ ] Sign out returns to the sign-in screen and hides the tab bar
 
 ### Two people at once
@@ -85,6 +106,13 @@ and open the printed `http://192.168.x.x:3000` address in Safari. Use the **Dev 
 
 ## After deploying to the Pi (HTTPS)
 
+Steps are in `DEPLOY.md`.
+
+- [ ] The address from `tailscale funnel status` opens on mobile data (Wi-Fi off), not just at home
+- [ ] Pi-hole still blocks ads and the internet still works at home after installing Tailscale
+- [ ] `sudo reboot` the Pi: Freewise comes back by itself (same address, still signed in)
+- [ ] The morning after, `~/freewise-backups` has a new backup and `backup.log` shows no errors
+- [ ] The PC's dev login buttons do **not** appear on the Pi address
 - [ ] **Add to Home Screen** from Safari's Share menu shows the green split-coin icon and the name "Freewise"
 - [ ] Opening it from the Home Screen is full-screen (no Safari address bar) and lands on Groups
 - [ ] Google sign-in works inside the home-screen app (it goes to Google and comes back)

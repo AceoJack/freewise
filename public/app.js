@@ -4,6 +4,7 @@ import { mountActivity } from './views/activity.js';
 import { svg } from './views/components.js';
 import { mountFriends } from './views/friends.js';
 import { mountGroup } from './views/group.js';
+import { mountGroupSettings } from './views/group-settings.js';
 import { mountGroups } from './views/groups.js';
 import { mountGroupHistory, mountSettlement } from './views/history.js';
 import { renderLogin } from './views/login.js';
@@ -46,7 +47,8 @@ async function main() {
   route();
 }
 
-// #/friends, #/groups, #/groups/:id, #/groups/:id/history, #/settlements/:id, #/activity, #/account
+// #/friends, #/groups, #/groups/:id, #/groups/:id/history, #/groups/:id/settings,
+// #/settlements/:id, #/activity, #/account
 function route() {
   if (!session.me) return;
   document.querySelector('dialog')?.close();
@@ -56,6 +58,7 @@ function route() {
   const num = Number(id);
 
   if (section === 'groups' && num && sub === 'history') refresh = mountGroupHistory(view, session, num);
+  else if (section === 'groups' && num && sub === 'settings') refresh = mountGroupSettings(view, session, num);
   else if (section === 'groups' && num) refresh = mountGroup(view, session, num);
   else if (section === 'settlements' && num) refresh = mountSettlement(view, session, num);
   else if (section === 'friends') refresh = mountFriends(view, session);

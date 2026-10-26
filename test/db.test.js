@@ -13,7 +13,7 @@ test('a fresh database gets the full schema', () => {
     'activity', 'expense_shares', 'expenses', 'friendships', 'group_members', 'groups',
     'settlement_payments', 'settlements', 'user_emails', 'users',
   ]);
-  assert.equal(db.pragma('user_version', { simple: true }), 2);
+  assert.equal(db.pragma('user_version', { simple: true }), 3);
   assert.equal(db.pragma('foreign_keys', { simple: true }), 1);
 });
 
@@ -32,7 +32,7 @@ test('upgrading a v1 database moves the two-person ledger into a group', () => {
 
   migrate(db);
 
-  assert.equal(db.pragma('user_version', { simple: true }), 2);
+  assert.equal(db.pragma('user_version', { simple: true }), 3);
   assert.deepEqual(db.prepare('SELECT id, name, created_by FROM groups').all(), [{ id: 1, name: 'Jack & Jaime', created_by: 1 }]);
   assert.equal(db.prepare('SELECT count(*) FROM group_members WHERE group_id = 1').pluck().get(), 2);
   assert.equal(db.prepare('SELECT count(*) FROM friendships').pluck().get(), 2);
@@ -94,4 +94,30 @@ test('seedUsers adds a new email to an existing person and never removes anyone'
   assert.equal(findUserByEmail(db, 'jaime.third@example.com').id, findUserByEmail(db, 'jaime@example.com').id);
   assert.ok(findUserByEmail(db, 'jack@example.com'));
   assert.throws(() => seedUsers(db, parseUsersConfig('X:jack@example.com,jaime@example.com')), /different people/);
+});
+
+test('upgrading a v2 database keeps expenses and allows the new split types', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  migrate(db, { upTo: 2 });
+  db.exec(`
+    INSERT INTO users (id, name) VALUES (1, 'Jack'), (2, 'Jaime');
+    INSERT INTO groups (id, name, created_by) VALUES (1, 'Home', 1);
+    INSERT INTO group_members (group_id, user_id) VALUES (1, 1), (1, 2);
+    INSERT INTO expenses (id, group_id, description, amount_cents, paid_by, split_type, spent_on, created_by)
+    VALUES (1, 1, 'Groceries', 1000, 1, 'equal', '2026-10-01', 1);
+    INSERT INTO expense_shares (expense_id, user_id, share_cents) VALUES (1, 1, 500), (1, 2, 500);`);
+
+  migrate(db);
+
+  assert.equal(db.pragma('user_version', { simple: true }), 3);
+  assert.deepEqual(db.prepare('SELECT user_id, share_cents, split_value FROM expense_shares ORDER BY user_id').all(), [
+    { user_id: 1, share_cents: 500, split_value: null }, { user_id: 2, share_cents: 500, split_value: null },
+  ]);
+  assert.equal(db.prepare('SELECT deleted_at FROM groups').pluck().get(), null);
+  db.prepare(`INSERT INTO expenses (group_id, description, amount_cents, paid_by, split_type, spent_on, created_by)
+              VALUES (1, 'Rent', 1000, 1, 'percent', '2026-10-02', 1)`).run();
+  db.prepare('DELETE FROM expenses WHERE id = 1').run(); // shares still follow the rebuilt table
+  assert.equal(db.prepare('SELECT count(*) FROM expense_shares').pluck().get(), 0);
+  assert.deepEqual(db.pragma('foreign_key_check'), []);
 });

@@ -350,3 +350,142 @@ test('malformed JSON gets a JSON error, not an HTML page', async (t) => {
   assert.equal(res.status, 400);
   assert.equal((await res.json()).error, 'invalid_json');
 });
+
+// ---------- Percentage and exact splits ----------
+
+test('expenses: percentage splits keep each person’s percentage for editing', async (t) => {
+  const { jack, jaime, home } = await setup(t);
+  const res = await jack.call('POST', `/groups/${home.id}/expenses`,
+    expense({ amount: '200', paidBy: jack.id, split: 'percent', percents: { [jack.id]: '30', [jaime.id]: '70' } }));
+  assert.equal(res.status, 201);
+  assert.deepEqual(res.body.shares, { [jack.id]: 6000, [jaime.id]: 14000 });
+  assert.deepEqual(res.body.splitValues, { [jack.id]: 3000, [jaime.id]: 7000 });
+  assert.equal(res.body.split, 'percent');
+
+  const { body } = await jaime.call('GET', `/groups/${home.id}`);
+  assert.deepEqual(body.ledger.expenses[0].splitValues, { [jack.id]: 3000, [jaime.id]: 7000 });
+  assert.deepEqual(body.ledger.balances, { [jack.id]: 14000, [jaime.id]: -14000 });
+
+  // Editing to an equal split drops the stored percentages.
+  const edited = await jaime.call('PUT', `/expenses/${res.body.id}`, expense({ amount: '200', paidBy: jack.id }));
+  assert.equal(edited.body.splitValues, undefined);
+});
+
+test('expenses: exact splits must add up to the total', async (t) => {
+  const { jack, jaime, home, addSam } = await setup(t);
+  const sam = await addSam();
+  await jack.call('POST', `/groups/${home.id}/members`, { userId: sam.id });
+
+  const ok = await jaime.call('POST', `/groups/${home.id}/expenses`, expense({
+    amount: '50', paidBy: jaime.id, split: 'exact', amounts: { [jack.id]: '12.50', [jaime.id]: '', [sam.id]: '37.50' },
+  }));
+  assert.equal(ok.status, 201);
+  assert.deepEqual(ok.body.shares, { [jack.id]: 1250, [sam.id]: 3750 });
+
+  const cases = [
+    [{ split: 'exact', amounts: { [jack.id]: '10', [jaime.id]: '30' } }, 'amounts', /\$40\.00, not \$50\.00/],
+    [{ split: 'exact' }, 'amounts', /amount for each/],
+    [{ split: 'exact', amounts: { 999: '50' } }, 'amounts', /in the group/],
+    [{ split: 'percent', percents: { [jack.id]: '50', [jaime.id]: '40' } }, 'percents', /90%, not 100%/],
+    [{ split: 'percent', percents: { [jack.id]: 'lots' } }, 'percents', /like 25/],
+  ];
+  for (const [overrides, field, message] of cases) {
+    const res = await jack.call('POST', `/groups/${home.id}/expenses`, expense({ amount: '50', paidBy: jack.id, ...overrides }));
+    assert.equal(res.status, 400, JSON.stringify(overrides));
+    assert.equal(res.body.field, field);
+    assert.match(res.body.message, message);
+  }
+});
+
+test('settle up: the ledger says how many payments simplifying saves', async (t) => {
+  const { jack, jaime, home, addSam } = await setup(t);
+  const sam = await addSam();
+  await jack.call('POST', `/groups/${home.id}/members`, { userId: sam.id });
+  await jack.call('POST', `/groups/${home.id}/expenses`, expense({ amount: '90', paidBy: jack.id }));
+  await jaime.call('POST', `/groups/${home.id}/expenses`, expense({ amount: '60', paidBy: jaime.id }));
+  await sam.call('POST', `/groups/${home.id}/expenses`, expense({ amount: '30', paidBy: sam.id }));
+
+  const { ledger } = (await jack.call('GET', `/groups/${home.id}`)).body;
+  assert.equal(ledger.directPaymentCount, 3);
+  assert.deepEqual(ledger.transfers, [{ fromUserId: sam.id, toUserId: jack.id, amountCents: 3000 }]);
+});
+
+// ---------- Group settings ----------
+
+test('groups: any member can rename, and it shows in activity', async (t) => {
+  const { jack, jaime, home } = await setup(t);
+  const res = await jaime.call('PATCH', `/groups/${home.id}`, { name: '  Flat 4  ' });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.name, 'Flat 4');
+  assert.equal((await jack.call('PATCH', `/groups/${home.id}`, { name: '' })).body.field, 'name');
+
+  const { items } = (await jack.call('GET', '/activity')).body;
+  assert.equal(items[0].type, 'group_renamed');
+  assert.deepEqual(items[0].data, { from: 'Home', to: 'Flat 4' });
+});
+
+test('groups: deleting needs a settled ledger, then hides the group for everyone', async (t) => {
+  const { jack, jaime, home } = await setup(t);
+  const added = await jack.call('POST', `/groups/${home.id}/expenses`, expense({ paidBy: jack.id }));
+  const blocked = await jaime.call('DELETE', `/groups/${home.id}`);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, 'unsettled');
+
+  const { ledger } = (await jack.call('GET', `/groups/${home.id}`)).body;
+  await jack.call('POST', `/groups/${home.id}/settle`, { balanceToken: ledger.balanceToken });
+  assert.equal((await jaime.call('DELETE', `/groups/${home.id}`)).status, 204);
+
+  assert.deepEqual((await jack.call('GET', '/groups')).body, []);
+  assert.equal((await jack.call('GET', `/groups/${home.id}`)).status, 404);
+  assert.equal((await jack.call('GET', `/groups/${home.id}/history`)).status, 404);
+  assert.equal((await jack.call('PUT', `/expenses/${added.body.id}`, expense({ paidBy: jack.id }))).status, 404);
+
+  // The feed still shows what happened, but the group can't be opened.
+  const { items } = (await jack.call('GET', '/activity')).body;
+  assert.equal(items[0].type, 'group_deleted');
+  assert.equal(items[0].canOpen, false);
+  assert.ok(items.every((a) => !a.canOpen));
+  assert.equal(items[0].data.name, 'Home');
+});
+
+test('groups: removing a member is blocked while they’re part of unsettled expenses', async (t) => {
+  const { jack, jaime, home, addSam } = await setup(t);
+  const sam = await addSam();
+  await jack.call('POST', `/groups/${home.id}/members`, { userId: sam.id });
+  await jack.call('POST', `/groups/${home.id}/expenses`, expense({ paidBy: jack.id, participants: [jack.id, jaime.id] }));
+
+  const blocked = await jaime.call('DELETE', `/groups/${home.id}/members/${jack.id}`);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, 'has_unsettled_expenses');
+  assert.match(blocked.body.message, /Jack is part of/);
+
+  // Sam isn't in that expense, so can be removed.
+  const removed = await jaime.call('DELETE', `/groups/${home.id}/members/${sam.id}`);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.members.map((m) => m.id), [jack.id, jaime.id]);
+  assert.equal((await sam.call('GET', `/groups/${home.id}`)).status, 404);
+  assert.equal((await jaime.call('DELETE', `/groups/${home.id}/members/${sam.id}`)).status, 404);
+
+  const { items } = (await jack.call('GET', '/activity')).body;
+  assert.equal(items[0].type, 'member_removed');
+  assert.equal(items[0].targetUserId, sam.id);
+  assert.equal(items[0].canOpen, true);
+
+  // Sam still hears they were removed, but nothing else from the group.
+  const samFeed = (await sam.call('GET', '/activity')).body.items;
+  assert.deepEqual(samFeed.filter((a) => a.groupId === home.id).map((a) => [a.type, a.canOpen]), [['member_removed', false]]);
+});
+
+test('groups: leaving a group, but not as the last member', async (t) => {
+  const { jack, jaime, home } = await setup(t);
+  const left = await jaime.call('DELETE', `/groups/${home.id}/members/${jaime.id}`);
+  assert.equal(left.status, 204);
+  assert.deepEqual((await jaime.call('GET', '/groups')).body, []);
+  assert.equal((await jack.call('GET', '/activity')).body.items[0].type, 'member_left');
+  const jaimeFeed = (await jaime.call('GET', '/activity')).body.items;
+  assert.deepEqual(jaimeFeed.filter((a) => a.groupId === home.id).map((a) => a.type), ['member_left']);
+
+  const last = await jack.call('DELETE', `/groups/${home.id}/members/${jack.id}`);
+  assert.equal(last.status, 409);
+  assert.equal(last.body.error, 'last_member');
+});

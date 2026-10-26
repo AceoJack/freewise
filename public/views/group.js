@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { el } from '../dom.js';
 import { formatMoney } from '../format.js';
-import { expenseList, joinNames, loadError, pageHeader, transferSentence } from './components.js';
+import { expenseList, joinNames, loadError, pageHeader, svg, transferSentence } from './components.js';
 import { openExpenseForm } from './expense-form.js';
 import { openSettleUp } from './settle.js';
 import { openSheet } from './sheet.js';
@@ -45,7 +45,10 @@ export function mountGroup(root, session, groupId) {
     header.replaceChildren(
       pageHeader(group.name, {
         back: { href: '#/groups', label: 'Groups' },
-        action: el('a', { class: 'link', href: `#/groups/${group.id}/history` }, 'History'),
+        action: el('span', { class: 'header-actions' },
+          el('a', { class: 'link', href: `#/groups/${group.id}/history` }, 'History'),
+          el('a', { class: 'icon-button', href: `#/groups/${group.id}/settings`, 'aria-label': 'Group settings', title: 'Group settings' },
+            svg(GEAR))),
       }),
       el('p', { class: 'subtitle muted' },
         others.length ? `With ${joinNames(others)} · ` : 'Just you so far · ',
@@ -144,3 +147,5 @@ export function mountGroup(root, session, groupId) {
   load();
   return load;
 }
+
+const GEAR = '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>';

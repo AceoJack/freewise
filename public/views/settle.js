@@ -22,6 +22,7 @@ export function openSettleUp({ me, group, ledger, onSettled, onConflict }) {
     el('p', { class: 'settle-question' }, question),
     transfers.length > 1 && el('ul', { class: 'payments' },
       transfers.map((t) => el('li', {}, paymentSentence(t, people, me.id)))),
+    savings(ledger),
     el('p', { class: 'muted' }, `${plural(ledger.expenses.length, 'expense')} will move to History and the ledger will start fresh.`),
     formError,
     el('div', { class: 'actions' },
@@ -51,4 +52,13 @@ export function openSettleUp({ me, group, ledger, onSettled, onConflict }) {
       confirmButton.disabled = false;
     }
   }
+}
+
+// Balances are netted per person before settling, so it usually takes fewer
+// payments than everyone paying each other back expense by expense.
+function savings({ transfers, directPaymentCount }) {
+  if (transfers.length === 0 || directPaymentCount <= transfers.length) return null;
+  const these = transfers.length === 1 ? 'This one payment settles' : `These ${transfers.length} payments settle`;
+  return el('p', { class: 'muted' },
+    `${these} everyone. Paying each other back directly would take ${directPaymentCount}.`);
 }

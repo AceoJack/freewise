@@ -64,6 +64,8 @@ export function balancePhrase(cents) {
 export function splitSummary(e, people, meId, memberCount) {
   const ids = Object.keys(e.shares).map(Number);
   if (e.split === 'full') return `owed by ${nameOf(people, ids[0], meId).replace(/^You$/, 'you')}`;
+  if (e.split === 'percent') return 'split by percentage';
+  if (e.split === 'exact') return 'split by exact amounts';
   return ids.length === memberCount ? 'split equally' : `split ${ids.length} ways`;
 }
 

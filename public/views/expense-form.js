@@ -1,4 +1,6 @@
-import { MAX_DESCRIPTION_LENGTH, expenseImpact, parseAmount, splitShares } from '/shared/ledger.js';
+import {
+  FULL_PERCENT, MAX_DESCRIPTION_LENGTH, expenseImpact, formatPercent, parseAmount, parseCents, parsePercent, splitShares,
+} from '/shared/ledger.js';
 import { api } from '../api.js';
 import { el } from '../dom.js';
 import { formatMoney, todayLocal } from '../format.js';
@@ -7,24 +9,30 @@ import { openSheet } from './sheet.js';
 // Opens the add/edit expense sheet for a group. Pass an existing expense to
 // edit or delete it. Calls onSaved after any change is stored.
 //
-// Two-person groups get the single "Paid by you, split equally" dropdown.
-// Bigger groups pick who paid and how to split separately, and can untick
-// people who weren't part of an equal split.
+// Two-person groups get the single "Paid by you, split equally" dropdown, with
+// percentage and exact-amount splits as extra choices. Bigger groups pick who
+// paid and how to split separately, and can untick people who weren't part of
+// an equal split.
 export function openExpenseForm({ me, group, expense = null, onSaved }) {
   const editing = expense !== null;
   const members = [...group.members].sort((a, b) => (a.id === me.id ? -1 : b.id === me.id ? 1 : 0));
   const label = (m) => (m.id === me.id ? 'You' : m.name);
   const nameById = Object.fromEntries(members.map((m) => [m.id, m.name]));
 
-  // What the form currently says about who paid and who owes.
+  // What the form currently says about who paid and who owes. values holds what
+  // was typed for each person in a percentage or exact split.
   const state = editing
     ? {
       paidBy: expense.paidBy,
       split: expense.split,
       owedBy: expense.split === 'full' ? Number(Object.keys(expense.shares)[0]) : null,
       participants: new Set(Object.keys(expense.shares).map(Number)),
+      values: { percent: {}, exact: {}, [expense.split]: typedValues(expense) },
     }
-    : { paidBy: me.id, split: 'equal', owedBy: null, participants: new Set(members.map((m) => m.id)) };
+    : {
+      paidBy: me.id, split: 'equal', owedBy: null, participants: new Set(members.map((m) => m.id)),
+      values: { percent: {}, exact: {} },
+    };
 
   const description = el('input', {
     id: 'expense-description', type: 'text', maxlength: MAX_DESCRIPTION_LENGTH, autocomplete: 'off',
@@ -47,6 +55,12 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
     return el('div', { class: 'field' }, labelText && el('label', { for: input.id }, labelText), wrapper ?? input, error);
   };
 
+  const paidBy = el('select', { id: 'expense-paid-by' }, members.map((m) => el('option', { value: m.id }, label(m))));
+  paidBy.value = String(state.paidBy);
+  const paidByField = field('Paid by', paidBy, ['paidBy']);
+  const percentInputs = splitValuesField('percent');
+  const exactInputs = splitValuesField('exact');
+
   const splitFields = members.length === 2 ? twoPersonSplit() : groupSplit();
 
   const form = el('form', { novalidate: true, onsubmit: save },
@@ -56,6 +70,8 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
     field('Description', description, ['description']),
     field('Amount', amount, ['amount'], el('div', { class: 'amount-input' }, el('span', { 'aria-hidden': 'true' }, '$'), amount)),
     ...splitFields,
+    percentInputs.field,
+    exactInputs.field,
     field('Date', spentOn, ['spentOn']),
     preview,
     formError,
@@ -67,12 +83,18 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
   );
 
   amount.addEventListener('input', updatePreview);
-  updatePreview();
+  // A field's error goes away once it's edited, so it can't contradict the live totals.
+  form.addEventListener('input', (event) => {
+    const error = event.target.closest('.field')?.querySelector(':scope > .field-error');
+    if (error) error.hidden = true;
+  });
+  showSplitInputs();
 
   const dialog = openSheet('expense-title', form);
   if (!editing) description.focus();
 
-  // One dropdown with the four combinations, as in the original design.
+  // One dropdown with the four common combinations, as in the original design,
+  // plus percentage and exact splits, which also show who paid.
   function twoPersonSplit() {
     const other = members.find((m) => m.id !== me.id);
     const options = [
@@ -80,23 +102,30 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
       { paidBy: me.id, split: 'full', owedBy: other.id, text: `Paid by you, ${other.name} owes the full amount` },
       { paidBy: other.id, split: 'equal', text: `Paid by ${other.name}, split equally` },
       { paidBy: other.id, split: 'full', owedBy: me.id, text: `Paid by ${other.name}, you owe the full amount` },
+      { split: 'percent', text: 'Split by percentages…' },
+      { split: 'exact', text: 'Split by exact amounts…' },
     ];
     const select = el('select', { id: 'expense-split' }, options.map((o, i) => el('option', { value: i }, o.text)));
-    select.value = String(Math.max(0, options.findIndex((o) => o.paidBy === state.paidBy && o.split === state.split)));
+    select.value = String(Math.max(0, options.findIndex((o) => o.split === state.split && (!o.paidBy || o.paidBy === state.paidBy))));
     const apply = () => {
       const o = options[select.value];
-      Object.assign(state, { paidBy: o.paidBy, split: o.split, owedBy: o.owedBy ?? null, participants: new Set(members.map((m) => m.id)) });
-      updatePreview();
+      Object.assign(state, { split: o.split, owedBy: o.owedBy ?? null, participants: new Set(members.map((m) => m.id)) });
+      if (o.paidBy) state.paidBy = o.paidBy;
+      paidBy.value = String(state.paidBy);
+      paidByField.hidden = !['percent', 'exact'].includes(o.split);
+      showSplitInputs();
     };
     select.addEventListener('change', apply);
+    paidBy.addEventListener('change', () => {
+      state.paidBy = Number(paidBy.value);
+      updatePreview();
+    });
     apply();
-    return [field('Split', select, ['paidBy', 'split', 'owedBy', 'participants'])];
+    return [field('Split', select, ['split', 'owedBy', 'participants']), paidByField];
   }
 
   // Separate "paid by" and "split" pickers, plus who's in an equal split.
   function groupSplit() {
-    const paidBy = el('select', { id: 'expense-paid-by' }, members.map((m) => el('option', { value: m.id }, label(m))));
-    paidBy.value = String(state.paidBy);
     const split = el('select', { id: 'expense-split' });
     const checkboxes = members.map((m) => el('input', {
       type: 'checkbox', id: `expense-participant-${m.id}`, value: m.id, checked: state.participants.has(m.id),
@@ -105,14 +134,17 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
       el('legend', {}, 'Split between'),
       members.map((m, i) => el('label', { class: 'check' }, checkboxes[i], el('span', {}, label(m)))),
     );
+    const participantsField = field('', checkboxes[0], ['participants'], participants);
 
     const fillSplitOptions = () => {
       const owers = members.filter((m) => m.id !== state.paidBy);
       split.replaceChildren(
         el('option', { value: 'equal' }, 'Split equally'),
+        el('option', { value: 'percent' }, 'Split by percentages'),
+        el('option', { value: 'exact' }, 'Split by exact amounts'),
         ...owers.map((m) => el('option', { value: `full:${m.id}` }, m.id === me.id ? 'You owe the full amount' : `${m.name} owes the full amount`)),
       );
-      const wanted = state.split === 'full' ? `full:${state.owedBy}` : 'equal';
+      const wanted = state.split === 'full' ? `full:${state.owedBy}` : state.split;
       split.value = [...split.options].some((o) => o.value === wanted) ? wanted : 'equal';
     };
     const readSplit = () => {
@@ -128,29 +160,98 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
       fillSplitOptions();
       readSplit();
       state.participants = new Set(checkboxes.filter((c) => c.checked).map((c) => Number(c.value)));
-      participants.hidden = state.split !== 'equal';
-      updatePreview();
+      participantsField.hidden = state.split !== 'equal';
+      showSplitInputs();
     };
     paidBy.addEventListener('change', apply);
     split.addEventListener('change', apply);
     for (const c of checkboxes) c.addEventListener('change', apply);
     apply();
 
-    return [
-      field('Paid by', paidBy, ['paidBy']),
-      field('Split', split, ['split', 'owedBy']),
-      field('', checkboxes[0], ['participants'], participants),
-    ];
+    return [paidByField, field('Split', split, ['split', 'owedBy']), participantsField];
+  }
+
+  // A box per person for their percentage or dollar amount, with a running
+  // "left to assign" line underneath.
+  function splitValuesField(kind) {
+    const percent = kind === 'percent';
+    const total = el('p', { class: 'split-total', 'aria-live': 'polite' });
+    const rows = members.map((m) => {
+      const input = el('input', {
+        type: 'text', id: `expense-${kind}-${m.id}`, inputmode: 'decimal', autocomplete: 'off', placeholder: percent ? '0' : '0.00',
+        'aria-label': `${label(m)}${percent ? ' (percent)' : ' (dollars)'}`, value: state.values[kind][m.id] ?? null,
+      });
+      input.addEventListener('input', () => {
+        state.values[kind][m.id] = input.value;
+        updatePreview();
+      });
+      const share = el('span', { class: 'split-share muted' });
+      const box = el('div', { class: `split-input ${kind}` },
+        !percent && el('span', { 'aria-hidden': 'true' }, '$'), input, percent && el('span', { 'aria-hidden': 'true' }, '%'));
+      return { id: m.id, input, share, row: el('div', { class: 'split-row' }, el('span', { class: 'split-name' }, label(m)), share, box) };
+    });
+    const fieldset = el('fieldset', { class: 'participants split-values' },
+      el('legend', {}, percent ? 'Percentages' : 'Amounts'), rows.map((r) => r.row), total);
+    return { kind, rows, total, field: field('', rows[0].input, [percent ? 'percents' : 'amounts'], fieldset) };
+  }
+
+  function showSplitInputs() {
+    percentInputs.field.hidden = state.split !== 'percent';
+    exactInputs.field.hidden = state.split !== 'exact';
+    updatePreview();
+  }
+
+  // Parses what's typed for the current percentage or exact split:
+  // { values, total } in hundredths of a percent or cents, or null if a box is invalid.
+  function typedSplitValues() {
+    const values = {};
+    for (const m of members) {
+      const raw = state.values[state.split][m.id];
+      const value = state.split === 'percent' ? parsePercent(raw) : parseCents(raw);
+      if (value === null) return null;
+      if (value > 0) values[m.id] = value;
+    }
+    return { values, total: Object.values(values).reduce((a, b) => a + b, 0) };
+  }
+
+  // Updates the per-person dollar amounts and the "left to assign" line.
+  function updateSplitValues(cents) {
+    const inputs = state.split === 'percent' ? percentInputs : state.split === 'exact' ? exactInputs : null;
+    if (!inputs) return;
+    const typed = typedSplitValues();
+    const target = state.split === 'percent' ? FULL_PERCENT : cents;
+    const show = (n) => (state.split === 'percent' ? formatPercent(n) : formatMoney(n));
+
+    let message;
+    let done = false;
+    if (!typed) message = state.split === 'percent' ? 'Enter percentages like 25 or 33.33.' : 'Enter amounts like 12.50.';
+    else if (target === null) message = `${formatMoney(typed.total)} assigned. Enter the total above.`;
+    else if (typed.total < target) message = `${show(target - typed.total)} left to assign`;
+    else if (typed.total > target) message = `${show(typed.total - target)} too much`;
+    else [message, done] = [state.split === 'percent' ? 'Adds up to 100%' : `Adds up to ${formatMoney(cents)}`, true];
+    inputs.total.textContent = message;
+    inputs.total.classList.toggle('done', done);
+
+    // For percentages, show what each person's share comes to once it adds up.
+    const shares = done && cents !== null ? currentShares(cents) : null;
+    for (const r of inputs.rows) r.share.textContent = state.split === 'percent' && shares?.[r.id] ? formatMoney(shares[r.id]) : '';
   }
 
   function currentShares(cents) {
     if (state.split === 'full') return state.owedBy ? splitShares(cents, { split: 'full', owedBy: state.owedBy }) : null;
+    if (state.split === 'percent' || state.split === 'exact') {
+      const typed = typedSplitValues();
+      const target = state.split === 'percent' ? FULL_PERCENT : cents;
+      return typed && typed.total === target
+        ? splitShares(cents, { split: state.split, paidBy: state.paidBy, values: typed.values }) : null;
+    }
     if (state.participants.size === 0) return null;
     return splitShares(cents, { split: 'equal', paidBy: state.paidBy, participants: [...state.participants] });
   }
 
   function updatePreview() {
     const cents = parseAmount(amount.value);
+    updateSplitValues(cents);
     const shares = cents === null ? null : currentShares(cents);
     if (!shares) {
       preview.textContent = '';
@@ -190,6 +291,14 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
     }
   }
 
+  function splitBody() {
+    const memberValues = (kind) => Object.fromEntries(members.map((m) => [m.id, state.values[kind][m.id] ?? '']));
+    if (state.split === 'equal') return { participants: [...state.participants] };
+    if (state.split === 'full') return { owedBy: state.owedBy };
+    if (state.split === 'percent') return { percents: memberValues('percent') };
+    return { amounts: memberValues('exact') };
+  }
+
   async function save(event) {
     event.preventDefault();
     clearErrors();
@@ -199,7 +308,7 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
       paidBy: state.paidBy,
       split: state.split,
       spentOn: spentOn.value,
-      ...(state.split === 'equal' ? { participants: [...state.participants] } : { owedBy: state.owedBy }),
+      ...splitBody(),
     };
     saveButton.disabled = true;
     try {
@@ -224,4 +333,12 @@ export function openExpenseForm({ me, group, expense = null, onSaved }) {
       showError(err);
     }
   }
+}
+
+// The boxes' starting text when editing a percentage or exact split:
+// 3333 -> "33.33" for percentages, 1250 -> "12.50" for amounts.
+function typedValues(expense) {
+  if (!expense.splitValues) return {};
+  return Object.fromEntries(Object.entries(expense.splitValues).map(([id, v]) => [id,
+    expense.split === 'percent' ? formatPercent(v).replace('%', '') : (v / 100).toFixed(2)]));
 }

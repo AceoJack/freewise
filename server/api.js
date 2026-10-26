@@ -7,7 +7,7 @@ import {
   settleGroup, updateExpense, validateExpense,
 } from './expenses.js';
 import { addFriend, listFriends, lookupEmail } from './friends.js';
-import { addMember, createGroup, getGroup, isMember, listGroups } from './groups.js';
+import { addMember, createGroup, deleteGroup, getGroup, isMember, listGroups, removeMember, renameGroup } from './groups.js';
 import { getUser, peopleById, updateUserName, validateName } from './users.js';
 
 export function apiRouter({ db, config }) {
@@ -52,8 +52,24 @@ export function apiRouter({ db, config }) {
     res.json({ group, ledger: getGroupLedger(db, group.id) });
   });
 
+  router.patch('/groups/:id', (req, res) => {
+    res.json(renameGroup(db, req.user.id, idParam(req), req.body));
+  });
+
+  router.delete('/groups/:id', (req, res) => {
+    deleteGroup(db, req.user.id, idParam(req));
+    res.status(204).end();
+  });
+
   router.post('/groups/:id/members', (req, res) => {
     res.status(201).json(addMember(db, req.user.id, idParam(req), req.body?.userId));
+  });
+
+  // Remove someone, or leave the group when it's your own id. Returns the group, or 204 after leaving.
+  router.delete('/groups/:id/members/:userId', (req, res) => {
+    const group = removeMember(db, req.user.id, idParam(req), idParam(req, 'userId'));
+    if (group) res.json(group);
+    else res.status(204).end();
   });
 
   router.post('/groups/:id/expenses', (req, res) => {
@@ -111,8 +127,8 @@ export function apiRouter({ db, config }) {
   return router;
 }
 
-function idParam(req) {
-  const id = Number(req.params.id);
+function idParam(req, name = 'id') {
+  const id = Number(req.params[name]);
   if (!Number.isSafeInteger(id) || id <= 0) throw notFound();
   return id;
 }

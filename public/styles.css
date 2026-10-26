@@ -112,6 +112,7 @@ button.small { min-height: 36px; padding: 0 14px; font-size: 0.9rem; }
 button:disabled { opacity: 0.6; }
 button.inline-link { border: none; background: none; padding: 0; min-height: 0; color: var(--accent); font-size: inherit; font-weight: 600; }
 button.danger-link { border: none; background: none; color: var(--danger); justify-self: center; }
+button.danger { color: var(--danger); font-weight: 600; }
 .icon-button {
   width: 44px;
   height: 44px;
@@ -129,6 +130,7 @@ a.link { color: var(--accent); text-decoration: none; font-weight: 600; display:
 .page-title-row h1 { overflow-wrap: anywhere; }
 a.back { color: var(--accent); text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; min-height: 36px; }
 .subtitle { margin: -6px 0 12px; }
+.header-actions { display: inline-flex; align-items: center; gap: 4px; margin-right: -10px; }
 
 /* Login */
 .login {
@@ -360,3 +362,23 @@ input[type="checkbox"] { width: 22px; min-height: 22px; height: 22px; margin: 0;
 .payments { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-weight: 600; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .actions.single { grid-template-columns: 1fr; }
+
+/* Group settings */
+.settings-form, .danger-zone { display: grid; gap: 14px; margin-bottom: 8px; }
+.settings-form .notice, .danger-zone p { margin: 0; }
+.list + .hint, .list + .error { margin-top: 8px; }
+
+/* Percentage and exact splits: name, share, then a narrow box per person */
+.split-values { gap: 0; }
+.split-row { display: flex; align-items: center; gap: 10px; min-height: 52px; }
+.split-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.split-share { font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.split-input { position: relative; width: 112px; flex-shrink: 0; }
+.split-input input { text-align: right; font-variant-numeric: tabular-nums; }
+.split-input span { position: absolute; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.split-input.exact span { left: 12px; }
+.split-input.exact input { padding-left: 24px; }
+.split-input.percent span { right: 12px; }
+.split-input.percent input { padding-right: 28px; }
+.split-total { margin: 6px 0 0; font-size: 0.9rem; font-weight: 600; color: var(--negative); }
+.split-total.done { color: var(--positive); }

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_AMOUNT_CENTS, expenseImpact, netBalances, parseAmount, simplifyDebts, splitShares } from '../shared/ledger.js';
+import {
+  MAX_AMOUNT_CENTS, expenseImpact, formatPercent, netBalances, pairwiseDebts, parseAmount, parseCents, parsePercent,
+  simplifyDebts, splitShares,
+} from '../shared/ledger.js';
 
 test('parseAmount accepts the ways people type money', () => {
   const cases = {
@@ -83,4 +86,78 @@ test('simplifyDebts settles everyone with few payments', () => {
   }
   assert.ok(Object.values(after).every((c) => c === 0));
   assert.ok(result.length <= 4);
+});
+
+test('parsePercent reads hundredths of a percent; blank is 0', () => {
+  assert.equal(parsePercent('25'), 2500);
+  assert.equal(parsePercent('33.33'), 3333);
+  assert.equal(parsePercent('12.5%'), 1250);
+  assert.equal(parsePercent('100'), 10000);
+  assert.equal(parsePercent(''), 0);
+  for (const bad of ['100.01', '-5', 'abc', '1.234', '101']) assert.equal(parsePercent(bad), null, bad);
+  assert.equal(formatPercent(3333), '33.33%');
+  assert.equal(formatPercent(5000), '50%');
+});
+
+test('parseCents allows zero and blank for exact splits', () => {
+  assert.equal(parseCents(''), 0);
+  assert.equal(parseCents('0'), 0);
+  assert.equal(parseCents('12.50'), 1250);
+  assert.equal(parseCents('x'), null);
+});
+
+test('splitShares: percentages round down and hand leftover cents to the payer first', () => {
+  // $100 at 33.33 / 33.33 / 33.34
+  assert.deepEqual(splitShares(10000, { split: 'percent', paidBy: 2, values: { 1: 3333, 2: 3333, 3: 3334 } }),
+    { 1: 3333, 2: 3333, 3: 3334 });
+  // $10.01 at 50/50: 500.5 each, the payer gets the odd cent
+  assert.deepEqual(splitShares(1001, { split: 'percent', paidBy: 2, values: { 1: 5000, 2: 5000 } }), { 1: 500, 2: 501 });
+  // Zero percent means not involved
+  assert.deepEqual(splitShares(1000, { split: 'percent', paidBy: 1, values: { 1: 0, 2: 10000 } }), { 2: 1000 });
+  assert.throws(() => splitShares(1000, { split: 'percent', paidBy: 1, values: { 1: 5000, 2: 4000 } }), /100%/);
+});
+
+test('splitShares: exact amounts must add up to the total', () => {
+  assert.deepEqual(splitShares(5000, { split: 'exact', paidBy: 1, values: { 1: 1250, 2: 3750, 3: 0 } }), { 1: 1250, 2: 3750 });
+  assert.throws(() => splitShares(5000, { split: 'exact', paidBy: 1, values: { 1: 1250 } }), /add up/);
+});
+
+test('simplifying beats everyone paying each other back directly', () => {
+  // Three housemates each pay a shared bill, split three ways.
+  // Paying back directly: every pair owes something, so 3 payments.
+  // Netted: Jack is up $30, Jaime is even, Sam is down $30, so 1 payment.
+  const expenses = [
+    { paidBy: 1, amountCents: 9000, shares: { 1: 3000, 2: 3000, 3: 3000 } },
+    { paidBy: 2, amountCents: 6000, shares: { 1: 2000, 2: 2000, 3: 2000 } },
+    { paidBy: 3, amountCents: 3000, shares: { 1: 1000, 2: 1000, 3: 1000 } },
+  ];
+  assert.equal(pairwiseDebts(expenses).length, 3);
+  assert.deepEqual(simplifyDebts(netBalances(expenses)), [{ fromUserId: 3, toUserId: 1, amountCents: 3000 }]);
+});
+
+test('simplifyDebts always clears everyone in at most n - 1 payments', () => {
+  // Random ledgers: the payments must zero every balance, never outnumber
+  // n - 1, and never be more than paying each other back directly.
+  let seed = 42;
+  const random = (n) => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed % n; };
+  for (let run = 0; run < 200; run++) {
+    const people = 2 + random(6);
+    const expenses = Array.from({ length: 1 + random(10) }, () => {
+      const paidBy = 1 + random(people);
+      const participants = Array.from({ length: people }, (_, i) => i + 1).filter(() => random(3) > 0);
+      if (participants.length === 0) participants.push(paidBy);
+      const amountCents = 1 + random(50000);
+      return { paidBy, amountCents, shares: splitShares(amountCents, { split: 'equal', paidBy, participants }) };
+    });
+    const net = netBalances(expenses);
+    const transfers = simplifyDebts(net);
+    for (const t of transfers) {
+      assert.ok(t.amountCents > 0);
+      net[t.fromUserId] += t.amountCents;
+      net[t.toUserId] -= t.amountCents;
+    }
+    assert.ok(Object.values(net).every((c) => c === 0), `run ${run} leaves balances`);
+    assert.ok(transfers.length <= people - 1, `run ${run}: ${transfers.length} payments for ${people} people`);
+    assert.ok(transfers.length <= pairwiseDebts(expenses).length, `run ${run} is worse than paying directly`);
+  }
 });

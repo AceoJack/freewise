@@ -69,8 +69,20 @@ function activityItem(a, people, me) {
     case 'group_created':
       text = `${actor} created the group “${d.name}”.`;
       break;
+    case 'group_renamed':
+      text = `${actor} renamed “${d.from}” to “${d.to}”.`;
+      break;
+    case 'group_deleted':
+      text = `${actor} deleted the group “${d.name}”.`;
+      break;
     case 'member_added':
       text = `${actor} added ${target === 'You' ? 'you' : target} to ${a.groupName}.`;
+      break;
+    case 'member_removed':
+      text = `${actor} removed ${target === 'You' ? 'you' : target} from ${a.groupName}.`;
+      break;
+    case 'member_left':
+      text = `${actor} left ${a.groupName}.`;
       break;
     case 'friend_added':
       text = a.actorId === me.id ? `You added ${target} as a friend.` : `${actor} added you as a friend.`;
@@ -87,7 +99,7 @@ function activityItem(a, people, me) {
       el('span', { class: 'detail muted' }, formatDateTime(a.createdAt)),
     ),
   ];
-  return a.groupId
+  return a.canOpen
     ? el('a', { class: 'row feed-item', href: `#/groups/${a.groupId}` }, content)
     : el('div', { class: 'row feed-item' }, content);
 }
