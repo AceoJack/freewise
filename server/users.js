@@ -47,3 +47,19 @@ export function findUserByEmail(db, email) {
 export function listUsers(db) {
   return db.prepare('SELECT id, name FROM users ORDER BY id').all();
 }
+
+export function primaryEmail(db, userId) {
+  return db.prepare('SELECT email FROM user_emails WHERE user_id = ? ORDER BY rowid LIMIT 1')
+    .pluck().get(userId) ?? null;
+}
+
+// Links an email to the Google account that first signs in with it. Returns
+// false if a different Google account later presents the same email.
+export function recordGoogleSub(db, email, sub) {
+  if (typeof sub !== 'string' || !sub) return false;
+  const row = db.prepare('SELECT google_sub FROM user_emails WHERE email = ?').get(email);
+  if (!row) return false;
+  if (row.google_sub) return row.google_sub === sub;
+  db.prepare('UPDATE user_emails SET google_sub = ? WHERE email = ?').run(sub, email);
+  return true;
+}

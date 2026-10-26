@@ -1,21 +1,17 @@
-import express from 'express';
-import path from 'node:path';
+import { createApp } from './app.js';
+import { googleVerifier } from './auth.js';
+import { loadConfig } from './config.js';
 import { openDb } from './db.js';
-import { parseUsersConfig, syncUsers } from './users.js';
+import { syncUsers } from './users.js';
 
-const PORT = Number(process.env.PORT) || 3000;
-const HOST = process.env.HOST || '127.0.0.1';
+const config = loadConfig();
+const db = openDb(config.dbPath);
+syncUsers(db, config.users);
 
-const db = openDb();
-syncUsers(db, parseUsersConfig(process.env.FREEWISE_USERS));
+const app = createApp({ db, config, verifyGoogleToken: googleVerifier(config.googleClientId) });
 
-const app = express();
-app.use(express.json());
-
-app.get('/health', (req, res) => res.json({ ok: true }));
-
-app.use(express.static(path.join(import.meta.dirname, '..', 'public')));
-
-app.listen(PORT, HOST, () => {
-  console.log(`Freewise running at http://${HOST}:${PORT}`);
+app.listen(config.port, config.host, () => {
+  const host = ['127.0.0.1', '::1'].includes(config.host) ? 'localhost' : config.host;
+  console.log(`Freewise running at http://${host}:${config.port}`);
+  if (config.devLogin) console.log('DEV_LOGIN is on: anyone who can reach this server can sign in as anyone');
 });
