@@ -1,9 +1,10 @@
 import express from 'express';
 import path from 'node:path';
-import { authRouter, requireUser } from './auth.js';
-import { listUsers } from './users.js';
+import { apiRouter } from './api.js';
+import { authRouter } from './auth.js';
+import { ClientError } from './errors.js';
 
-const PUBLIC_DIR = path.join(import.meta.dirname, '..', 'public');
+const ROOT = path.join(import.meta.dirname, '..');
 
 export function createApp({ db, config, verifyGoogleToken }) {
   const app = express();
@@ -13,16 +14,22 @@ export function createApp({ db, config, verifyGoogleToken }) {
   app.get('/health', (req, res) => res.json({ ok: true }));
 
   app.use('/auth', authRouter({ db, config, verifyGoogleToken }));
+  app.use('/api', apiRouter({ db, config }));
+  app.use('/api', (req, res) => res.status(404).json({ error: 'not_found', message: 'Not found.' }));
 
-  const api = express.Router();
-  api.use(requireUser({ db, config }));
-  api.get('/me', (req, res) => {
-    const partner = listUsers(db).find((u) => u.id !== req.user.id);
-    res.json({ user: req.user, partner });
+  app.use('/shared', express.static(path.join(ROOT, 'shared')));
+  app.use(express.static(path.join(ROOT, 'public')));
+
+  app.use((err, req, res, next) => {
+    if (err instanceof ClientError) {
+      return res.status(err.status).json({ error: err.code, message: err.message, field: err.field });
+    }
+    if (err.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'invalid_json', message: 'Request body is not valid JSON.' });
+    }
+    console.error(err);
+    res.status(500).json({ error: 'server_error', message: 'Something went wrong.' });
   });
-  app.use('/api', api);
-
-  app.use(express.static(PUBLIC_DIR));
 
   return app;
 }

@@ -1,7 +1,7 @@
 import express from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { COOKIE_NAME, SESSION_MS, parseCookies, signSession, verifySession } from './session.js';
-import { findUserByEmail, listUsers, primaryEmail, recordGoogleSub } from './users.js';
+import { findUserByEmail, listUsers, primaryEmail, recordGoogleSignIn } from './users.js';
 
 const GOOGLE_JWKS_URL = new URL('https://www.googleapis.com/oauth2/v3/certs');
 const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
@@ -55,7 +55,7 @@ export function authRouter({ db, config, verifyGoogleToken }) {
 
     const user = findUserByEmail(db, claims.email);
     if (!user) return fail('not_allowed');
-    if (!recordGoogleSub(db, user.email, claims.sub)) return fail('account_mismatch');
+    if (!recordGoogleSignIn(db, user.email, claims.sub, claims.picture)) return fail('account_mismatch');
 
     startSession(res, user.email);
     res.redirect(303, '/');
@@ -79,8 +79,8 @@ export function authRouter({ db, config, verifyGoogleToken }) {
 }
 
 // Rejects the request unless it carries a valid session for an email that is
-// still allowed. Looking the email up each time means removing it from
-// FREEWISE_USERS signs that account out on the next request.
+// still known. Looking the email up each time means removing it from the
+// database signs that account out on the next request.
 export function requireUser({ db, config }) {
   return (req, res, next) => {
     const session = verifySession(parseCookies(req.headers.cookie)[COOKIE_NAME], config.sessionSecret);

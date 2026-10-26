@@ -1,14 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createApp } from '../server/app.js';
-import { openDb } from '../server/db.js';
-import { parseUsersConfig, syncUsers } from '../server/users.js';
-
-const USERS = 'Jack:jack@example.com;Jaime:jaime@example.com,jaime.alt@example.com';
+import { addFriend } from '../server/friends.js';
+import { sessionCookie, startServer } from './helpers.js';
 
 // Fake Google: each credential string maps to the claims Google would return.
 const GOOGLE_TOKENS = {
-  jack: { sub: 'g-jack', email: 'jack@example.com', email_verified: true },
+  jack: { sub: 'g-jack', email: 'jack@example.com', email_verified: true, picture: 'https://example.com/jack.png' },
   jaime: { sub: 'g-jaime', email: 'jaime@example.com', email_verified: true },
   jaimeAlt: { sub: 'g-jaime-alt', email: 'Jaime.Alt@example.com', email_verified: true },
   impostor: { sub: 'g-other', email: 'jack@example.com', email_verified: true },
@@ -16,19 +13,12 @@ const GOOGLE_TOKENS = {
   stranger: { sub: 'g-s', email: 'stranger@example.com', email_verified: true },
 };
 
-async function start(t, { devLogin = false } = {}) {
-  const db = openDb(':memory:');
-  syncUsers(db, parseUsersConfig(USERS));
-  const config = { googleClientId: 'test-client', sessionSecret: 'x'.repeat(64), devLogin, secureCookies: false };
-  const verifyGoogleToken = async (credential) => {
-    if (!GOOGLE_TOKENS[credential]) throw new Error('invalid');
-    return GOOGLE_TOKENS[credential];
-  };
-  const server = createApp({ db, config, verifyGoogleToken }).listen(0, '127.0.0.1');
-  await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => { server.close(); db.close(); });
-  return { db, base: `http://127.0.0.1:${server.address().port}` };
-}
+const verifyGoogleToken = async (credential) => {
+  if (!GOOGLE_TOKENS[credential]) throw new Error('invalid');
+  return GOOGLE_TOKENS[credential];
+};
+
+const start = (t, options) => startServer(t, { verifyGoogleToken, ...options });
 
 function googleLogin(base, credential, { csrf = 'abc', cookieCsrf = csrf } = {}) {
   return fetch(`${base}/auth/google/callback`, {
@@ -42,10 +32,6 @@ function googleLogin(base, credential, { csrf = 'abc', cookieCsrf = csrf } = {})
   });
 }
 
-function sessionCookie(res) {
-  return res.headers.getSetCookie().find((c) => c.startsWith('fw_session='))?.split(';')[0];
-}
-
 function me(base, cookie) {
   return fetch(`${base}/api/me`, { headers: cookie ? { cookie } : {} });
 }
@@ -56,7 +42,7 @@ test('API requires a session', async (t) => {
   assert.equal((await me(base, 'fw_session=forged.value')).status, 401);
 });
 
-test('Google sign-in creates a session and /api/me returns user and partner', async (t) => {
+test('Google sign-in creates a session and /api/me returns the account', async (t) => {
   const { base } = await start(t);
   const res = await googleLogin(base, 'jack');
   assert.equal(res.status, 303);
@@ -68,7 +54,8 @@ test('Google sign-in creates a session and /api/me returns user and partner', as
 
   const body = await (await me(base, sessionCookie(res))).json();
   assert.equal(body.user.name, 'Jack');
-  assert.equal(body.partner.name, 'Jaime');
+  assert.deepEqual(body.user.emails, ['jack@example.com']);
+  assert.equal(body.user.pictureUrl, 'https://example.com/jack.png');
 });
 
 test('both of Jaime\'s Google accounts sign in as Jaime', async (t) => {
@@ -77,7 +64,7 @@ test('both of Jaime\'s Google accounts sign in as Jaime', async (t) => {
     const res = await googleLogin(base, credential);
     const body = await (await me(base, sessionCookie(res))).json();
     assert.equal(body.user.name, 'Jaime');
-    assert.equal(body.partner.name, 'Jack');
+    assert.deepEqual(body.user.emails, ['jaime@example.com', 'jaime.alt@example.com']);
   }
 });
 
@@ -104,13 +91,25 @@ test('an email is pinned to the first Google account that uses it', async (t) =>
   assert.equal(res.headers.get('location'), '/?login_error=account_mismatch');
 });
 
-test('removing an email from the allowlist ends its existing sessions', async (t) => {
+test('removing an email from the database ends its existing sessions', async (t) => {
   const { base, db } = await start(t);
   const cookie = sessionCookie(await googleLogin(base, 'jaimeAlt'));
   assert.equal((await me(base, cookie)).status, 200);
 
-  syncUsers(db, parseUsersConfig('Jack:jack@example.com;Jaime:jaime@example.com'));
+  db.prepare('DELETE FROM user_emails WHERE email = ?').run('jaime.alt@example.com');
   assert.equal((await me(base, cookie)).status, 401);
+});
+
+test('someone added as a friend by email can then sign in with Google', async (t) => {
+  const { base, db } = await start(t);
+  assert.equal((await googleLogin(base, 'stranger')).headers.get('location'), '/?login_error=not_allowed');
+
+  const jack = db.prepare("SELECT user_id FROM user_emails WHERE email = 'jack@example.com'").pluck().get();
+  addFriend(db, jack, { email: 'stranger@example.com', name: 'Sam' });
+
+  const res = await googleLogin(base, 'stranger');
+  assert.equal(res.headers.get('location'), '/');
+  assert.equal((await (await me(base, sessionCookie(res))).json()).user.name, 'Sam');
 });
 
 test('logout clears the session cookie', async (t) => {
